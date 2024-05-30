@@ -1,5 +1,5 @@
 import http from "http";
-import WebSocket from "ws";
+import SocketIO from "socket.io";
 import express from "express";
 
 const app = express();
@@ -13,35 +13,57 @@ app.get("/*", (_, res) => res.redirect("/"));
 const handleListen = () => console.log(`Listening on http://localhost:3000`);
 
 const server = http.createServer(app);
-const wss = new WebSocket.Server({server});
+// socket.io in back-end
+const socketIO = SocketIO(server);
 
-const sockets = [];
+function publicRooms() {
+    const {
+      sockets: {
+        adapter: { sids, rooms },
+      },
+    } = socketIO;
+    const publicRooms = [];
+    rooms.forEach((_, key) => {
+      if (sids.get(key) === undefined) {
+        publicRooms.push(key);
+      }
+    });
+    return publicRooms;
+  }
 
-wss.on("connection", (socket) => {
-    console.log("Connected to Browser");
-    sockets.push(socket);
+socketIO.on("connection", socket => {
     socket["nickname"] = "Anon";
-    
-    socket.on("close", onSocketClose);
+    socket.onAny((event) => {
+        console.log(`Socket Event: ${event}`);
+    });
 
-    socket.on("message", msg => {
-        const message = JSON.parse(msg);
-        console.log(message);
-        switch (message.type) {
-            case "new_message":
-                sockets.forEach((sk) => {
-                    sk.send(`${socket.nickname}: ${message.payload}`)
-                });
-                break;
-            case "nickname":
-                socket["nickname"] = message.payload;
-                break;
-        }
+    socket.on("enter_room", (userName, roomName, done) => {
+        socket["nickname"] = userName ? userName : "Anon";
+        socket.join(roomName);
+        done();
+        socket.to(roomName).emit("welcome", socket.nickname);
+        socketIO.sockets.emit("room_change", publicRooms());
+    });
+
+    socket.on("disconnecting", () => {
+        socket.rooms.forEach((room) => {
+            socket.to(room).emit("bye", socket.nickname);
+        });
+    });
+
+    socket.on("disconnect", () => {
+        socketIO.sockets.emit("room_change", publicRooms());
+    });
+
+    socket.on("new_message", (msg, room, done) => {
+        socket.to(room).emit("new_message", `${socket.nickname}: ${msg}`);
+        done();
     })
-});
 
-function onSocketClose() {
-    console.log("Disconnected from th Browser");
-}
+    socket.on("nickname", (nickname) => {
+        socket["nickname"] = nickname;
+    })
+
+})
 
 server.listen(3000, handleListen);
